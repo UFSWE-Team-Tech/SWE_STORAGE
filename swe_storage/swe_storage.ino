@@ -1,104 +1,16 @@
-//TRANSMITTER
-//Include Libraries
-//#include <SPI.h>
-//#include <nRF24L01.h>
-//#include <RF24.h>
-//
-////create an RF24 object
-//RF24 radio(2, 3);  // CE, CSN
-//
-////address through which two modules communicate.
-//const byte address[6] = "00001";
-//
-//void setup()
-//{
-//  radio.begin();
-//  
-//  //set the address
-//  radio.openWritingPipe(address);
-//  
-//  //Set module as transmitter
-//  radio.stopListening();
-//}
-//void loop()
-//{
-//  //Send message to receiver
-//  const char text[] = "Hello World";
-//  radio.write(&text, sizeof(text));
-//  
-//  delay(1000);
-//}
-
-
-
-
-//RECIEVER
-//Include Libraries
-//#include <SPI.h>
-//#include <nRF24L01.h>
-//#include <RF24.h>
-//
-////create an RF24 object
-//RF24 radio(2, 3);  // CE, CSN
-//
-////address through which two modules communicate.
-//const byte address[6] = "00002";
-//
-//void setup()
-//{
-//  while (!Serial);
-//    Serial.begin(9600);
-//  
-//  radio.begin();
-//  
-//  //set the address
-//  radio.openReadingPipe(0, address);
-//  
-//  //Set module as receiver
-//  radio.startListening();
-//
-//  pinMode(9, OUTPUT);
-////  pinMode(1, OUTPUT);
-//  pinMode(6, OUTPUT);
-//  pinMode(7, OUTPUT);
-//  pinMode(8, OUTPUT);
-//}
-//
-//void loop()
-//{
-//  //Read the data if available in buffer
-//  if (radio.available())
-//  {
-//    char text[32] = {0};
-//    radio.read(&text, sizeof(text));
-//    Serial.println(text);
-//
-//  }
-//
-//  digitalWrite(9, HIGH);
-////  digitalWrite(1, LOW);
-//  digitalWrite(6, HIGH);
-//  digitalWrite(7, HIGH);
-//  digitalWrite(8, HIGH);
-//}
-
-
-
-
-
 //RECIEVER WITH FILE UPLOADS
 //Include Libraries
 #include <SPI.h>
 #include <nRF24L01.h>
 #include <RF24.h>
 #include <SD.h>
-RF24 contr(4, 5);  // CE, CSN
-RF24 postn(2, 3);
+RF24 contr(2, 3);  // CE, CSN
+RF24 postn(4, 5);
 const byte address1[6] = "CONTR";
-const byte address2[6] = "00002";
+const byte address2[6] = "POSTN";
 int chipSelect = 10;
 File file;
-boolean firstPositionReceived;
+boolean firstPositionReceived = false;
 boolean send;
 int numQueries = 0; // the number of lfdm responses received
 int connectionCount = 0; // keep track of how many current lfdm connections there are
@@ -111,7 +23,7 @@ struct position_update
   float altitude;
   float timestamp;
 };
-position_update position;
+position_update pos;
 
 struct lfdm_identifier
 {
@@ -119,6 +31,7 @@ struct lfdm_identifier
   byte address[6]; // 5-byte nRF24L01+ address
 };
 lfdm_identifier connections[4]; // contains the four potential lfdm connections
+lfdm_identifier testConnection;
 
 struct lfdm_detection_signal
 {
@@ -178,24 +91,53 @@ void loop()
 {
   if (postn.available()) // read position updates from autonomy
   {
-    postn.read(&position, sizeof(position));
+    digitalWrite(A0, HIGH);
+    char test[32] = {0};
+    postn.read(&pos, sizeof(pos));
     firstPositionReceived = true;
-    Serial.println(position.latitude);
-    Serial.println(position.longitude);
-    Serial.println(position.altitude);
-    Serial.println(position.timestamp); 
+    Serial.println("Position received");
+    Serial.println(pos.latitude);
+    Serial.println(pos.longitude);
+    Serial.println(pos.altitude);
+    Serial.println(pos.timestamp);
+    
+    digitalWrite(A0, LOW);
   } 
   
-  digitalWrite(A0, HIGH);
   
-  if (!firstPositionReceived) // while first position has not been received AND max connections (4) not yet reached, listen for lfdm connections
+  if (true) // !firstPositionReceived while first position has not been received AND max connections (4) not yet reached, listen for lfdm connections
   {
     if (contr.available() && connectionCount < 4)
     {
-      contr.read(&connections[connectionCount], sizeof(connections[connectionCount])); // stores lfdm info in the lfdm_identifier struct 
-      connectionCount++;
-      digitalWrite(connectionLedPin, HIGH); // turn on LED for each corresponding lfdm connection
-      connectionLedPin++;
+      boolean connectionExists[4] = {(connectionCount>=1), (connectionCount>=2), (connectionCount>=3), (connectionCount>=4)};
+      boolean ignore = false;
+      contr.read(&testConnection, sizeof(testConnection)); // stores lfdm info in the lfdm_identifier struct 
+      for (int i = 0; i < connectionCount; i++) {
+        for (int j = 0; j < 3; j++) {
+          if (testConnection.id[j] != connections[i].id[j]) {
+            connectionExists[i] = false;
+          }
+        }
+      }
+      for (int i = 0; i < sizeof(connectionExists); i++) {
+        if (connectionExists[i] == true) {
+          ignore = true;
+        }
+      }
+      if (!ignore) {
+        for (int i = 0; i < sizeof(testConnection.id); i++) {
+          connections[connectionCount].id[i] = testConnection.id[i];
+        }
+        for (int i = 0; i < sizeof(testConnection.address); i++) {
+          connections[connectionCount].address[i] = testConnection.address[i];
+        }
+        connectionCount++;
+        digitalWrite(connectionLedPin, HIGH); // turn on LED for each corresponding lfdm connection
+        connectionLedPin++;
+        Serial.print("Connection received: ");
+        Serial.println(connectionCount);
+        Serial.println(connections[connectionCount].id);
+      }
     }
   }
   else
@@ -203,7 +145,7 @@ void loop()
     for (lfdm_identifier lfdm : connections) { // write an empty packet to each lfdm address
       contr.openWritingPipe(lfdm.address);
       contr.stopListening();
-      send = contr.write(&position, sizeof(position)); // FIXME Figure out how to write an empty packet to lfdm
+      send = contr.write(&pos, sizeof(pos)); // FIXME Figure out how to write an empty packet to lfdm
       delay(1000);
       if (send) { // if a packet is successfully sent, read the acknowledge packet that lfdm sends back, which contains the current detection signal
           if (contr.isAckPayloadAvailable()) {
@@ -220,7 +162,7 @@ void loop()
           Serial.println("Tx failed");
       }
     }
-    newPositionEntry.pos = position;
+    newPositionEntry.pos = pos;
     newPositionEntry.num_queries = numQueries;
     add_position_entry(newPositionEntry);
   }
@@ -262,3 +204,39 @@ void add_position_entry(position_entry entry)
   }
   delay(5000); // wait for 5000ms
 }
+
+////Include Libraries
+//#include <SPI.h>
+//#include <nRF24L01.h>
+//#include <RF24.h>
+//
+////create an RF24 object
+//RF24 radio(2, 3);  // CE, CSN
+//
+////address through which two modules communicate.
+//const byte address[6] = "00006";
+//
+//void setup()
+//{
+//  while (!Serial);
+//    Serial.begin(9600);
+//  
+//  radio.begin();
+//  
+//  //set the address
+//  radio.openReadingPipe(0, address);
+//  
+//  //Set module as receiver
+//  radio.startListening();
+//}
+//
+//void loop()
+//{
+//  //Read the data if available in buffer
+//  if (radio.available())
+//  {
+//    char text[32] = {0};
+//    radio.read(&text, sizeof(text));
+//    Serial.println(text);
+//  }
+//}
